@@ -36,6 +36,7 @@ type PublicUser = {
 
 type AuthMode = "signin" | "signup";
 type GuidedStage = "challenge" | "gather" | "hits" | "complete";
+type LlmProvider = "openai" | "gemini";
 
 const INITIAL_ASSISTANT_MESSAGE =
   "Please paste your challenge using the starter **'It would be great if I/We...'**. For more information, refer to the **Clarify Step 1** section of the guide.";
@@ -120,6 +121,7 @@ export default function Home() {
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
+  const [provider, setProvider] = useState<LlmProvider>("openai");
   const [registrationKey, setRegistrationKey] = useState("");
   const [authError, setAuthError] = useState("");
   const [authLoading, setAuthLoading] = useState(false);
@@ -274,7 +276,11 @@ export default function Home() {
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ messages: nextMessages, sessionId: activeSessionId }),
+        body: JSON.stringify({
+          messages: nextMessages,
+          sessionId: activeSessionId,
+          provider,
+        }),
       });
 
       const payload = (await response.json()) as { reply?: string; error?: string; sessionId?: string };
@@ -506,6 +512,20 @@ export default function Home() {
     await submitUserMessage(payload);
   }
 
+  function onHitsFormKeyDown(event: ReactKeyboardEvent<HTMLFormElement>): void {
+    if (event.key !== "Enter" || event.shiftKey) return;
+    event.preventDefault();
+    if (isLoading) return;
+
+    if (selectedHitNumbers.length === 0) {
+      setGuidedError("Pick at least one hit before submitting.");
+      return;
+    }
+
+    const payload = [...selectedHitNumbers].sort((a, b) => a - b).join(", ");
+    void submitUserMessage(payload);
+  }
+
   function toggleHit(index: number): void {
     const number = index + 1;
     setSelectedHitNumbers((current) =>
@@ -539,6 +559,7 @@ export default function Home() {
         body: JSON.stringify({
           options,
           context: "Create one strong Focus Question for Clarify Step 5.",
+          provider,
         }),
       });
 
@@ -697,6 +718,19 @@ export default function Home() {
                 <Button type="button" variant="secondary" className="h-8" onClick={() => void signOut()}>
                   Sign out
                 </Button>
+              </div>
+            ) : null}
+            {user ? (
+              <div className="mt-2 flex items-center gap-2 text-xs text-[#d9e4eb]">
+                <span>Provider</span>
+                <select
+                  className="rounded-md border border-white/20 bg-white/10 px-2 py-1 text-[#f8f4e7] outline-none"
+                  value={provider}
+                  onChange={(event) => setProvider(event.target.value as LlmProvider)}
+                >
+                  <option value="openai">OpenAI (default)</option>
+                  <option value="gemini">Gemini</option>
+                </select>
               </div>
             ) : null}
           </header>
@@ -875,7 +909,11 @@ export default function Home() {
               ) : null}
 
               {guidedStage === "hits" ? (
-                <form className="space-y-3 rounded-2xl border border-[#2f6a4f]/20 bg-[#f4faf6] p-4" onSubmit={submitHitNumbers}>
+                <form
+                  className="space-y-3 rounded-2xl border border-[#2f6a4f]/20 bg-[#f4faf6] p-4"
+                  onSubmit={submitHitNumbers}
+                  onKeyDown={onHitsFormKeyDown}
+                >
                   <p className="text-sm font-semibold text-[#214734]">Step 3 - Pick Your Hits</p>
                   <p className="text-xs text-muted-foreground">
                     Select the questions that feel like hits. We will submit only their numbers.
@@ -945,6 +983,9 @@ export default function Home() {
                     <p className="text-sm font-semibold text-[#214734]">Step 5 - Focus Question Composer</p>
                     <span className="text-xs text-muted-foreground">Select multiple and combine</span>
                   </div>
+                  <p className="rounded-lg border border-[#cddfd3] bg-white px-3 py-2 text-xs text-[#315943]">
+                    Chat is disabled at the final step. You can finalize your Focus Question below.
+                  </p>
 
                   {focusOptions.length > 0 ? (
                     <div className="space-y-2">

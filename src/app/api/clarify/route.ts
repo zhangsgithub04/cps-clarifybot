@@ -7,6 +7,8 @@ type ChatMessage = {
   content: string;
 };
 
+type Provider = "openai" | "gemini";
+
 const CLARIFY_SYSTEM_PROMPT = `# Role & Purpose
 Act as Clarify Bot, a seasoned CPS facilitator guiding users through the Clarify stage only.
 Help them explore their challenge, gather context, and craft motivating Focus Question options.
@@ -150,6 +152,68 @@ async function callOpenAI(messages: ChatMessage[]): Promise<string> {
   return fallback;
 }
 
+async function callGemini(messages: ChatMessage[]): Promise<string> {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is missing in .env.local");
+  }
+
+  const conversation = messages
+    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.content}`)
+    .join("\n\n");
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: CLARIFY_SYSTEM_PROMPT }],
+        },
+        contents: [
+          {
+            role: "user",
+            parts: [{ text: `Conversation so far:\n\n${conversation}` }],
+          },
+        ],
+        generationConfig: {
+          temperature: 0.4,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Gemini error (${response.status}): ${errorText}`);
+  }
+
+  const data = (await response.json()) as {
+    candidates?: Array<{
+      content?: {
+        parts?: Array<{
+          text?: string;
+        }>;
+      };
+    }>;
+  };
+
+  const text =
+    data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text ?? "")
+      .join("\n")
+      .trim() ?? "";
+
+  if (!text) {
+    throw new Error("No text returned from Gemini response");
+  }
+
+  return text;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const authedUser = await getAuthedUser();
@@ -157,7 +221,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Please sign in first." }, { status: 401 });
     }
 
-    const body = (await request.json()) as { messages?: ChatMessage[]; sessionId?: string };
+    const body = (await request.json()) as {
+      messages?: ChatMessage[];
+      sessionId?: string;
+      provider?: Provider;
+    };
+    const provider: Provider = body.provider === "gemini" ? "gemini" : "openai";
     const messages = Array.isArray(body.messages) ? body.messages : [];
 
     const normalized = messages.filter(
@@ -179,7 +248,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const reply = await callOpenAI(normalized);
+    const reply = provider === "gemini" ? await callGemini(normalized) : await callOpenAI(normalized);
     const fullConversation: ChatMessage[] = [...normalized, { role: "assistant", content: reply }];
     const sessionId = await saveClarifySession({
       userId: authedUser._id,
@@ -187,7 +256,7 @@ export async function POST(request: NextRequest) {
       messages: fullConversation,
     });
 
-    return NextResponse.json({ reply, sessionId }, { status: 200 });
+    return NextResponse.json({ reply, sessionId, provider }, { status: 200 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected error";
     return NextResponse.json(
